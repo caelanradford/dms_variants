@@ -369,6 +369,12 @@ class SigmoidPhenotypeSimulator:
         latent phenotype as `(weight, mean, sd)` for each Gaussian.
     stop_effect : float
         Effect of stop codon at any position.
+    `specific_epistasis` (int)
+        Percentage of sites with mutation effects dependent on the
+        identities of other sites. Default is 0.
+    `interacting_mutations` (int)
+        Number of mutations each specifically epistatic site depends upon
+        for its mutation effect. Default is 0. 
 
     Attributes
     ----------
@@ -376,12 +382,16 @@ class SigmoidPhenotypeSimulator:
         Wildtype latent phenotype.
     muteffects : dict
         Effect on latent phenotype of each amino-acid mutation.
+    `se_dictionary` (dict)
+        Additional effects on the latent phenotype when mutations are 
+        present in combination.
 
     """
 
     def __init__(self, geneseq, *, seed=1, wt_latent=5,
                  norm_weights=((0.4, -0.5, 1), (0.6, -5, 2.5)),
-                 stop_effect=-10):
+                 stop_effect=-10, specific_epistasis=0,
+                 interacting_mutations=0):
         """See main class docstring for how to initialize."""
         self.wt_latent = wt_latent
 
@@ -391,6 +401,10 @@ class SigmoidPhenotypeSimulator:
             scipy.random.seed(seed)
         weights, means, sds = zip(*norm_weights)
         cumweights = scipy.cumsum(weights)
+        
+        # dictionary for specific epistatic effects
+        self.se_dictionary = {}
+        
         for icodon in range(len(geneseq) // 3):
             wt_aa = CODON_TO_AA[geneseq[3 * icodon: 3 * icodon + 3]]
             for mut_aa in AAS_WITHSTOP:
@@ -403,7 +417,23 @@ class SigmoidPhenotypeSimulator:
                         # draw mutational effect from chosen Gaussian
                         muteffect = scipy.random.normal(means[i], sds[i])
                     self.muteffects[f"{wt_aa}{icodon + 1}{mut_aa}"] = muteffect
-
+                    
+        num_se_sites = (specific_epistasis / 100) * len(self.muteffects.keys())
+        se_sites = np.random.choice([x for x in self.muteffects.keys()],
+                                    size = int(num_se_sites), 
+                                    replace = False)
+        for muteffect in se_sites:
+            self.se_dictionary[muteffect] = {}
+            other_mutations = np.random.choice([x for x in self.muteffects.keys()],
+                                               size = int(interacting_mutations),
+                                               replace = False)
+            for mutation in other_mutations:
+                if mutation != muteffect:
+                    x = scipy.argmin(cumweights < scipy.random.rand())
+                    se = scipy.random.normal(means[x], sds[x])
+                    se = np.random.randint(-4, high=1)
+                    self.se_dictionary[muteffect][mutation] = se
+             
     def latentPhenotype(self, v):
         """Latent phenotype of a variant.
 
@@ -419,8 +449,15 @@ class SigmoidPhenotypeSimulator:
             Latent phenotype of variant.
 
         """
-        return self.wt_latent + sum(self.muteffects[m] for m in
-                                    v['aa_substitutions'].split())
+        latent = self.wt_latent
+        subs = v['aa_substitutions'].split()
+        for m in subs:
+            latent += self.muteffects[m]
+            if m in self.se_dictionary:
+                for sub in subs:
+                    if sub in self.se_dictionary[m]: 
+                        latent += self.se_dictionary[m][sub]
+        return latent
 
     def observedPhenotype(self, v):
         """Observed phenotype of a variant.
